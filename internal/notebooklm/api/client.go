@@ -2262,22 +2262,36 @@ func (c *Client) resolveSourceIDs(projectID string, sourceIDs []string) []string
 }
 
 // buildChatArgs builds the inner JSON args for a chat request.
-// Wire format matches grpc_arg_format: [[sources], prompt, null, [2]]
-// where sources is an array of [source_id] arrays.
+// Wire format: 9-element array matching the current NotebookLM protocol:
+//
+//	[sources, prompt, history, [2,null,[1],[1]], conversationID, null, null, projectID, 1]
+//
+// where sources is an array of [[source_id]] arrays (extra nesting level).
+// projectID at index 7 is required for server-side conversation persistence.
 func (c *Client) buildChatArgs(req ChatRequest) (string, error) {
 	req.SourceIDs = c.resolveSourceIDs(req.ProjectID, req.SourceIDs)
 
-	// Build source IDs array: [["id1"], ["id2"]]
+	// Build source IDs array: [[["id1"]], [["id2"]]]
 	sources := make([]interface{}, 0, len(req.SourceIDs))
 	for _, id := range req.SourceIDs {
-		sources = append(sources, []string{id})
+		sources = append(sources, []interface{}{[]string{id}})
+	}
+
+	conversationID := req.ConversationID
+	if conversationID == "" {
+		conversationID = uuid.NewString()
 	}
 
 	args := []interface{}{
 		sources,
 		req.Prompt,
+		nil, // history — populated on follow-up turns
+		[]interface{}{2, nil, []int{1}, []int{1}},
+		conversationID,
 		nil,
-		[]int{2},
+		nil,
+		req.ProjectID,
+		1,
 	}
 
 	argsJSON, err := json.Marshal(args)
