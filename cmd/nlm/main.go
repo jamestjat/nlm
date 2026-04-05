@@ -38,6 +38,7 @@ var (
 	useDirectRPC      bool // Use direct RPC calls instead of orchestration service
 	skipSources       bool // Skip fetching sources for chat (useful when project is inaccessible)
 	yes               bool // Skip confirmation prompts
+	listLimit         int  // Max notebooks to show in list (0 = all)
 )
 
 // ChatSession represents a persistent chat conversation
@@ -66,6 +67,7 @@ func init() {
 	flag.BoolVar(&skipSources, "skip-sources", false, "skip fetching sources for chat (useful for testing)")
 	flag.BoolVar(&yes, "yes", false, "skip confirmation prompts")
 	flag.BoolVar(&yes, "y", false, "skip confirmation prompts")
+	flag.IntVar(&listLimit, "limit", 10, "max notebooks to show in list (0 = all)")
 	flag.StringVar(&chromeProfile, "profile", os.Getenv("NLM_BROWSER_PROFILE"), "Chrome profile to use")
 	flag.StringVar(&authToken, "auth", os.Getenv("NLM_AUTH_TOKEN"), "auth token (or set NLM_AUTH_TOKEN)")
 	flag.StringVar(&cookies, "cookies", os.Getenv("NLM_COOKIES"), "cookies for authentication (or set NLM_COOKIES)")
@@ -871,12 +873,14 @@ func list(c *api.Client) error {
 
 	// Display total count
 	total := len(notebooks)
-	fmt.Printf("Total notebooks: %d (showing first 10)\n\n", total)
-
-	// Limit to first 10 entries
-	limit := 10
-	if len(notebooks) < limit {
-		limit = len(notebooks)
+	limit := listLimit
+	if limit <= 0 || limit > total {
+		limit = total
+	}
+	if limit < total {
+		fmt.Printf("Total notebooks: %d (showing first %d — use -limit 0 for all)\n\n", total, limit)
+	} else {
+		fmt.Printf("Total notebooks: %d\n\n", total)
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 1, ' ', 0)
