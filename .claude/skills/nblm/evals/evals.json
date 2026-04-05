@@ -1,0 +1,26 @@
+{
+  "skill_name": "nblm",
+  "evals": [
+    {
+      "id": 0,
+      "name": "ambiguous-beads-notebook",
+      "prompt": "ask my beads notebook how dependency edges actually work",
+      "expected_output": "Identifies beads-related notebook(s), handles the ambiguity of 2 beads notebooks (either asks user or picks most-sources/most-recent), runs nlm generate-chat, returns grounded answer preserving [N] citations verbatim.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "topic-without-notebook-word",
+      "prompt": "what do my sources say about Gilbert syndrome and cardiovascular risk?",
+      "expected_output": "Triggers the skill despite no 'notebook' keyword, matches Gilbert syndrome notebook by topic, runs generate-chat, returns grounded answer with [N] citations preserved.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "mcp-with-citation-followthrough",
+      "prompt": "pull from my notes on MCP — what transport options does the model context protocol support? tell me which source each point comes from",
+      "expected_output": "Matches MCP notebook (Mastering the Model Context Protocol), runs generate-chat, preserves [N] citations, AND runs nlm sources to resolve citations since user asked for source attribution.",
+      "files": []
+    }
+  ]
+}
