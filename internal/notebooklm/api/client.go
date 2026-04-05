@@ -2347,15 +2347,18 @@ func (c *Client) buildChatURL(notebookID string) string {
 
 // doChat sends a chat request and returns the full response text.
 func (c *Client) doChat(req ChatRequest) (string, error) {
-	var result strings.Builder
+	// Each chunk from parseChatResponse contains the full cumulative answer
+	// (see extractChatText — "full response text, not deltas"), so keep only
+	// the most recent one rather than concatenating.
+	var last string
 	err := c.doChatStreamed(req, func(chunk string) bool {
-		result.WriteString(chunk)
+		last = chunk
 		return true
 	})
 	if err != nil {
 		return "", err
 	}
-	return result.String(), nil
+	return last, nil
 }
 
 // doChatStreamed sends a chat request and streams response chunks via callback.
