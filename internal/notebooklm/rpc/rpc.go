@@ -41,8 +41,8 @@ const (
 	RPCGetAudioOverview    = "VUsiyb" // GetAudioOverview
 	RPCDeleteAudioOverview = "sJDbic" // DeleteAudioOverview
 
-	// NotebookLM service - Video operations
-	RPCCreateVideoOverview = "R7cb6c" // CreateVideoOverview
+	// NotebookLM service - Video operations (uses unified artifact endpoint)
+	RPCCreateVideoOverview = "R7cb6c" // Same as RPCCreateArtifact — unified artifact creation
 
 	// NotebookLM service - Chat operations
 	// NOTE: GenerateFreeFormStreamed does NOT use batchexecute. It uses a gRPC-Web
@@ -51,7 +51,7 @@ const (
 	RPCGenerateFreeFormStreamed = "BD"     // DEPRECATED: chat uses gRPC-Web, not batchexecute
 	RPCGetConversations        = "hPTbtc" // GetConversations - list conversation IDs for a notebook
 	RPCGetConversationHistory  = "khqZz"  // GetConversationHistory - retrieve chat messages
-	RPCDeleteChatHistory       = "e3bVqc" // DeleteChatHistory - delete all chat history for a notebook
+	RPCDeleteChatHistory       = "e3bVqc" // DeleteChatHistory — Python maps this ID to PollResearch; may be repurposed
 	RPCRateConversationTurn    = "J7Gthc" // RateConversationTurn - mark conversation turn (thumbs up/down?)
 
 	// NotebookLM service - Generation operations
@@ -88,12 +88,23 @@ const (
 	RPCGuidebookGenerateAnswer      = "itA0pc" // GuidebookGenerateAnswer
 
 	// LabsTailwindOrchestrationService - Artifact operations
-	RPCCreateArtifact = "xpWGLf" // CreateArtifact
+	RPCCreateArtifact = "R7cb6c" // CreateArtifact (unified — audio, video, report, quiz, etc.)
 	RPCGetArtifact    = "BnLyuf" // GetArtifact
 	RPCUpdateArtifact = "DJezBc" // UpdateArtifact
 	RPCRenameArtifact = "rc3d8d" // RenameArtifact - for title updates
-	RPCDeleteArtifact = "WxBZtb" // DeleteArtifact
+	RPCDeleteArtifact = "V5N4be" // DeleteArtifact
 	RPCListArtifacts  = "gArtLc" // ListArtifacts - get artifacts list
+
+	// LabsTailwindOrchestrationService - Artifact extras
+	RPCExportArtifact     = "Krh3pd" // ExportArtifact (to Google Docs/Sheets)
+	RPCGetInteractiveHTML = "v9rmvd" // GetInteractiveHTML (quiz/flashcard HTML content)
+	RPCReviseSlide        = "KmcKPe" // ReviseSlide (revise individual slide with prompt)
+
+	// LabsTailwindOrchestrationService - Research operations
+	RPCStartFastResearch = "Ljjv0c" // StartFastResearch (web research)
+	RPCStartDeepResearch = "QA9ei"  // StartDeepResearch
+	RPCPollResearch      = "e3bVqc" // PollResearch — NOTE: same ID as RPCDeleteChatHistory; usage TBD
+	RPCImportResearch    = "LBwxtb" // ImportResearch (import research sources)
 
 	// LabsTailwindOrchestrationService - Additional operations
 	RPCListFeaturedProjects = "nS9Qlc" // ListFeaturedProjects
@@ -118,7 +129,7 @@ func New(authToken, cookies string, options ...batchexecute.Option) *Client {
 	// Use session-specific parameters from env if available (set during auth)
 	blParam := os.Getenv("NLM_BL_PARAM")
 	if blParam == "" {
-		blParam = "boq_labs-tailwind-frontend_20260210.19_p0"
+		blParam = "boq_labs-tailwind-frontend_20260301.03_p0"
 	}
 	sessionID := os.Getenv("NLM_SESSION_ID")
 	if sessionID == "" {

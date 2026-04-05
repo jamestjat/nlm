@@ -2626,23 +2626,22 @@ func (c *Client) GetConversations(projectID string) ([]string, error) {
 type ChatGoal int
 
 const (
-	ChatGoalDefault       ChatGoal = 3 // Default conversational style
-	ChatGoalLearningGuide ChatGoal = 1 // Learning Guide mode (not yet confirmed)
+	ChatGoalDefault       ChatGoal = 1 // Default conversational style
 	ChatGoalCustom        ChatGoal = 2 // Custom with user-provided prompt
+	ChatGoalLearningGuide ChatGoal = 3 // Learning Guide mode
 )
 
 // ResponseLength represents a response length setting.
 type ResponseLength int
 
 const (
-	ResponseLengthDefault ResponseLength = 0 // Default (empty array)
+	ResponseLengthDefault ResponseLength = 1 // Default response length
 	ResponseLengthLonger  ResponseLength = 4 // Longer responses
-	ResponseLengthShorter ResponseLength = 3 // Shorter responses (inferred)
+	ResponseLengthShorter ResponseLength = 5 // Shorter responses
 )
 
 // SetChatConfig updates the chat configuration for a notebook via MutateProject.
-// goalConfig: [goal_type] or [goal_type, "custom_prompt"]
-// responseLengthConfig: [] for default, [4] for longer, [3] for shorter
+// Pass goal=0 to leave goal unchanged, responseLength=0 to leave length unchanged.
 func (c *Client) SetChatConfig(projectID string, goal ChatGoal, customPrompt string, responseLength ResponseLength) error {
 	var goalConfig interface{}
 	if goal == ChatGoalCustom && customPrompt != "" {
@@ -2654,7 +2653,7 @@ func (c *Client) SetChatConfig(projectID string, goal ChatGoal, customPrompt str
 	}
 
 	var lengthConfig interface{}
-	if responseLength != ResponseLengthDefault {
+	if responseLength != 0 {
 		lengthConfig = []interface{}{int(responseLength)}
 	} else {
 		lengthConfig = []interface{}{}
