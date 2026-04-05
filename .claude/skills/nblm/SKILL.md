@@ -8,12 +8,31 @@ description: >-
 
 Answer the user's question by querying their own NotebookLM notebooks. Unlike web search or Claude's general knowledge, responses here are **grounded** — they come from sources the user has personally curated, with inline citations pointing at those sources. If the notebook can't answer, NotebookLM says so rather than guessing.
 
-## Prerequisites
+## When to use
 
-The `nlm` binary must be on PATH and authenticated. Verify with `nlm -limit 1 list`. If it fails:
+**Use nblm when** the user references their own notebooks/sources/research, or asks a question that their curated NotebookLM library could plausibly answer better than general knowledge.
 
-- **Not installed**: tell the user it's missing and stop. Don't try to install it yourself — installation path depends on their Go setup and may need a specific fork/branch.
-- **Auth expired** (output mentions auth or 401): tell the user to run `nlm auth` in their terminal. Auth is interactive (opens a browser) so an agent can't complete it.
+**Skip nblm when** the request is generic web search, local file search, Google Drive queries, content generation (podcasts/videos/summaries), or interactive chat — this skill is read-only RAG retrieval only.
+
+**Unsure?** Ask: "Want me to check your NotebookLM, or answer from general knowledge?"
+
+## Bootstrap
+
+1. Expect `nlm` to be globally installed on PATH. If missing, tell the user and stop — don't try to install it yourself (path depends on their Go setup and may need a specific fork/branch).
+2. Verify auth with `nlm -limit 1 list`. If output mentions auth/401, tell the user to run `nlm auth` in their terminal (interactive, opens a browser — an agent can't complete it).
+3. Run `nlm --help` (and `nlm <subcommand>` with no args for per-command usage) to learn the CLI before using it. `nlm` has 50+ subcommands and flags can drift between versions — discover them live rather than trusting memory.
+
+## Agent rules
+
+| Rule | Why |
+|------|-----|
+| **Always pass `-limit 0` when listing** | Default is 10; users have dozens of notebooks and you'll miss the match. |
+| **Preserve `[N]` citations verbatim in the relay** | Load-bearing — users audit claims against `nlm sources <id>`. Stripping them breaks trust. |
+| **Never run `nlm chat`** | Interactive REPL — will hang the agent session. Use `generate-chat` instead. |
+| **Never run `nlm auth` yourself** | Browser-based, needs the human. |
+| **Confirm before running anything outside the read-only allowlist** | `nlm` has 60+ subcommands, most write to user data. Allowlist: `list`, `sources`, `notes`, `generate-chat`. Anything else — confirm first. |
+| **Don't install `nlm` yourself** | Installation depends on user's Go setup / fork. Ask the user. |
+| **Don't timeout `generate-chat` aggressively** | Latency is typically 5–30 seconds; grounded answers take time. |
 
 ## Core workflow
 
@@ -78,20 +97,18 @@ Citation `[N]` corresponds to the Nth source in that list (1-indexed).
 
 ## Command reference
 
-**Read-only (safe for agents):**
+**Read-only allowlist (safe for agents, covers the RAG workflow):**
 - `nlm -limit 0 list` — all notebooks
 - `nlm -limit N list` — first N (default 10)
 - `nlm sources <notebook-id>` — sources in a notebook (for citation resolution)
 - `nlm notes <notebook-id>` — user-curated notes saved inside the notebook
 - `nlm generate-chat <notebook-id> "<prompt>"` — RAG query
 
-**Mutating (confirm with user first, or don't run):**
-- `nlm create`, `nlm add`, `nlm rm`, `nlm rm-source`, `nlm rm-note` — modify user data
-- `nlm audio-create`, `nlm video-create`, `nlm generate-*` (other than `generate-chat`) — kick off async generation jobs that write back into the notebook
-
 **Skip entirely:**
 - `nlm chat` — interactive REPL, will hang an agent session
 - `nlm auth` — browser-based, needs the human
+
+**Everything else — confirm with the user first.** Assume any command not on the allowlist above writes to user data (creates notebooks/sources/notes, deletes them, renames, shares, kicks off audio/video/artifact generation, transforms content, etc.). When unsure what a command does, run `nlm <subcommand>` with no args to see its usage, or check `nlm --help`.
 
 ## Troubleshooting
 
