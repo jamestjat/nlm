@@ -6,13 +6,13 @@
 # === REFRESH COMMAND ===
 # Test refresh with no arguments (should not require prior auth)
 # It will fail without stored credentials, but should give helpful error
-! exec ./nlm_test refresh
+! exec nlm_test refresh
 stderr 'no stored credentials'
 ! stderr 'panic'
 ! stderr 'Authentication required for'
 
 # Test refresh accepts optional -debug flag
-! exec ./nlm_test -debug refresh
+! exec nlm_test -debug refresh
 stderr 'no stored credentials'
 ! stderr 'panic'
 ! stderr 'Authentication required for'

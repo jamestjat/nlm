@@ -22,11 +22,11 @@ var (
 
 func TestMain(m *testing.M) {
 	// Build the nlm binary for testing
-	cmd := exec.Command("go", "build", "-o", "nlm_test", ".")
+	cmd := exec.Command("go", "build", "-o", testBinaryName(), ".")
 	if err := cmd.Run(); err != nil {
 		panic("failed to build nlm for testing: " + err.Error())
 	}
-	defer os.Remove("nlm_test")
+	defer os.Remove(testBinaryName())
 
 	// Run tests
 	code := m.Run()
@@ -43,21 +43,8 @@ func TestCLICommands(t *testing.T) {
 
 	// Set up the script test environment
 	engine := script.NewEngine()
-	engine.Cmds["nlm_test"] = script.Program("./nlm_test", func(cmd *exec.Cmd) error {
-		// Create minimal environment with only essential variables
-		env := []string{
-			"PATH=" + os.Getenv("PATH"),
-			"HOME=" + tmpHome,
-			"TERM=" + os.Getenv("TERM"), // For colored output
-		}
-		// Only include Go-related vars if they exist
-		if gopath := os.Getenv("GOPATH"); gopath != "" {
-			env = append(env, "GOPATH="+gopath)
-		}
-		if goroot := os.Getenv("GOROOT"); goroot != "" {
-			env = append(env, "GOROOT="+goroot)
-		}
-		cmd.Env = env
+	engine.Cmds["nlm_test"] = script.Program(testBinaryPath(), func(cmd *exec.Cmd) error {
+		cmd.Env = testCLIEnv(tmpHome, nil)
 		return nil
 	}, time.Second)
 
@@ -73,21 +60,7 @@ func TestCLICommands(t *testing.T) {
 		}
 
 		t.Run(file.Name(), func(t *testing.T) {
-			// Create minimal environment for the script state
-			env := []string{
-				"PATH=" + os.Getenv("PATH"),
-				"HOME=" + tmpHome,
-				"TERM=" + os.Getenv("TERM"), // For colored output
-			}
-			// Only include Go-related vars if they exist
-			if gopath := os.Getenv("GOPATH"); gopath != "" {
-				env = append(env, "GOPATH="+gopath)
-			}
-			if goroot := os.Getenv("GOROOT"); goroot != "" {
-				env = append(env, "GOROOT="+goroot)
-			}
-
-			state, err := script.NewState(context.Background(), ".", env)
+			state, err := script.NewState(context.Background(), ".", testCLIEnv(tmpHome, nil))
 			if err != nil {
 				t.Fatalf("failed to create script state: %v", err)
 			}
@@ -181,11 +154,8 @@ func TestHelpCommand(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Run the command directly using exec.Command
-			cmd := exec.Command("./nlm_test", tt.args...)
-			cmd.Env = []string{
-				"PATH=" + os.Getenv("PATH"),
-				"HOME=" + tmpHome,
-			}
+			cmd := exec.Command(testBinaryPath(), tt.args...)
+			cmd.Env = testCLIEnv(tmpHome, nil)
 			output, err := cmd.CombinedOutput()
 
 			// Check exit code
@@ -263,11 +233,8 @@ func TestCommandValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Run the command directly using exec.Command
-			cmd := exec.Command("./nlm_test", tt.args...)
-			cmd.Env = []string{
-				"PATH=" + os.Getenv("PATH"),
-				"HOME=" + tmpHome,
-			}
+			cmd := exec.Command(testBinaryPath(), tt.args...)
+			cmd.Env = testCLIEnv(tmpHome, nil)
 			output, err := cmd.CombinedOutput()
 
 			// Should exit with error
@@ -339,19 +306,11 @@ func TestFlags(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Run with help to test flag parsing without auth issues
-			cmd := exec.Command("./nlm_test")
+			cmd := exec.Command(testBinaryPath())
 			cmd.Args = append(cmd.Args, tt.args...)
 			cmd.Args = append(cmd.Args, "help")
 
-			// Start with minimal environment
-			cmd.Env = []string{
-				"PATH=" + os.Getenv("PATH"),
-				"HOME=" + tmpHome,
-			}
-			// Add test-specific environment variables
-			for k, v := range tt.env {
-				cmd.Env = append(cmd.Env, k+"="+v)
-			}
+			cmd.Env = testCLIEnv(tmpHome, tt.env)
 
 			output, err := cmd.CombinedOutput()
 			// Help command exits with 1, but that's expected behavior
@@ -396,9 +355,9 @@ func TestAuthRequirements(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Run without auth credentials
-			cmd := exec.Command("./nlm_test", tt.command...)
+			cmd := exec.Command(testBinaryPath(), tt.command...)
 			// Clear auth environment variables and use isolated HOME
-			cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + tmpHome}
+			cmd.Env = testCLIEnv(tmpHome, nil)
 
 			output, err := cmd.CombinedOutput()
 			outputStr := string(output)
@@ -423,4 +382,46 @@ func TestAuthRequirements(t *testing.T) {
 			}
 		})
 	}
+}
+
+func testBinaryPath() string {
+	if wd, err := os.Getwd(); err == nil {
+		return filepath.Join(wd, testBinaryName())
+	}
+	if os.PathSeparator == '\\' {
+		return ".\\nlm_test.exe"
+	}
+	return "./nlm_test"
+}
+
+func testBinaryName() string {
+	if os.PathSeparator == '\\' {
+		return "nlm_test.exe"
+	}
+	return "nlm_test"
+}
+
+func testCLIEnv(home string, extra map[string]string) []string {
+	pathValue := os.Getenv("PATH")
+	if wd, err := os.Getwd(); err == nil {
+		pathValue = wd + string(os.PathListSeparator) + pathValue
+	}
+
+	env := []string{
+		"PATH=" + pathValue,
+		"HOME=" + home,
+	}
+	if term := os.Getenv("TERM"); term != "" {
+		env = append(env, "TERM="+term)
+	}
+	if gopath := os.Getenv("GOPATH"); gopath != "" {
+		env = append(env, "GOPATH="+gopath)
+	}
+	if goroot := os.Getenv("GOROOT"); goroot != "" {
+		env = append(env, "GOROOT="+goroot)
+	}
+	for key, value := range extra {
+		env = append(env, key+"="+value)
+	}
+	return env
 }

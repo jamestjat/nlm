@@ -101,6 +101,42 @@ func WithCheckNotebooks() Option             { return func(o *Options) { o.Check
 func WithKeepOpenSeconds(seconds int) Option { return func(o *Options) { o.KeepOpenSeconds = seconds } }
 func WithRemoteCDPURL(url string) Option     { return func(o *Options) { o.RemoteCDPURL = url } }
 
+const (
+	defaultAuthAttemptTimeout = 5 * time.Minute
+	defaultAuthPollTimeout    = 30 * time.Second
+)
+
+func (ba *BrowserAuth) authAttemptTimeout() time.Duration {
+	timeout := defaultAuthAttemptTimeout
+	if ba.keepOpenSeconds > 0 {
+		keepOpenTimeout := time.Duration(ba.keepOpenSeconds)*time.Second + time.Minute
+		if keepOpenTimeout > timeout {
+			timeout = keepOpenTimeout
+		}
+	}
+	return timeout
+}
+
+func isAuthPageURL(currentURL string) bool {
+	lowerURL := strings.ToLower(currentURL)
+	return strings.Contains(lowerURL, "accounts.google.com") ||
+		strings.Contains(lowerURL, "signin") ||
+		strings.Contains(lowerURL, "login")
+}
+
+func isManualLoginError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "sign-in") ||
+		strings.Contains(message, "signin") ||
+		strings.Contains(message, "login") ||
+		strings.Contains(message, "not authenticated") ||
+		strings.Contains(message, "authentication page")
+}
+
 // authViaRemoteCDP connects to an existing CDP session and extracts auth data.
 func (ba *BrowserAuth) authViaRemoteCDP(remoteCDPURL, targetURL string) (token, cookies string, err error) {
 	ba.isRemote = true
@@ -191,59 +227,14 @@ func (ba *BrowserAuth) tryMultipleProfiles(targetURL string) (token, cookies str
 			}
 		}
 
-		// Set up Chrome and try to authenticate
-		var ctx context.Context
-		var cancel context.CancelFunc
-
-		// Use chromedp.ExecAllocator approach with stealth flags to avoid detection
-		opts := []chromedp.ExecAllocatorOption{
-			chromedp.NoFirstRun,
-			chromedp.NoDefaultBrowserCheck,
-			chromedp.UserDataDir(userDataDir),
-			chromedp.Flag("headless", !ba.debug),
-			chromedp.Flag("window-size", "1280,800"),
-			chromedp.Flag("new-window", true),
-			chromedp.Flag("no-first-run", true),
-			chromedp.Flag("disable-default-apps", true),
-			chromedp.Flag("remote-debugging-port", "0"), // Use random port
-
-			// Anti-detection flags
-			chromedp.Flag("disable-blink-features", "AutomationControlled"),
-			chromedp.Flag("exclude-switches", "enable-automation"),
-			chromedp.Flag("disable-extensions-except", ""),
-			chromedp.Flag("disable-plugins-discovery", true),
-			chromedp.Flag("disable-dev-shm-usage", true),
-			chromedp.Flag("no-sandbox", false), // Keep sandbox enabled for security
-
-			// Make it look more like a regular browser
-			chromedp.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
-
-			// Use the appropriate browser executable for this profile type
-			chromedp.ExecPath(getBrowserPathForProfile(profile.Browser)),
-		}
-
-		// If using original profile, add the specific profile directory flag
-		if useOriginal == "1" {
-			profileName := filepath.Base(profile.Path)
-			if profileName != "Default" {
-				opts = append(opts, chromedp.Flag("profile-directory", profileName))
+		ctx, cancel, err := ba.newAuthContext(userDataDir, profile.Browser)
+		if err != nil {
+			if ba.debug {
+				fmt.Printf("Error starting auth browser for %s [%s]: %v\n", profile.Name, profile.Browser, err)
 			}
+			continue
 		}
-
-		allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
-		ba.cancel = allocCancel
-		ctx, cancel = chromedp.NewContext(allocCtx)
 		defer cancel()
-
-		// Use a longer timeout (45 seconds) to give more time for login processes
-		ctx, cancel = context.WithTimeout(ctx, 45*time.Second)
-		defer cancel()
-
-		if ba.debug {
-			ctx, _ = chromedp.NewContext(ctx, chromedp.WithLogf(func(format string, args ...interface{}) {
-				fmt.Printf("ChromeDP: "+format+"\n", args...)
-			}))
-		}
 
 		token, cookies, err = ba.extractAuthDataForURL(ctx, targetURL)
 		if err == nil && token != "" {
@@ -347,8 +338,9 @@ func scanBrowserProfiles(profilePath, browserName string, targetDomain string) (
 
 		fullPath := filepath.Join(profilePath, entry.Name())
 
-		// Check for key files that indicate it's a valid profile
-		validFiles := []string{"Cookies", "Login Data", "History"}
+		// Check for key files that indicate it's a valid profile.
+		// Chrome v96+ moved Cookies into the Network/ subdirectory.
+		validFiles := []string{"Network/Cookies", "Cookies", "Login Data", "History"}
 		var foundFiles []string
 		var isValid bool
 		var totalSize int64
@@ -384,7 +376,10 @@ func scanBrowserProfiles(profilePath, browserName string, targetDomain string) (
 
 		// Check if this profile has cookies for the target domain
 		if targetDomain != "" {
-			cookiesPath := filepath.Join(fullPath, "Cookies")
+			cookiesPath := filepath.Join(fullPath, "Network", "Cookies")
+			if _, err := os.Stat(cookiesPath); err != nil {
+				cookiesPath = filepath.Join(fullPath, "Cookies")
+			}
 			hasCookies := checkProfileForDomainCookies(cookiesPath, targetDomain)
 			profile.HasTargetCookies = hasCookies
 			profile.TargetDomain = targetDomain
@@ -701,38 +696,11 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 		return "", "", fmt.Errorf("copy profile: %w", err)
 	}
 
-	var ctx context.Context
-	var cancel context.CancelFunc
-
-	// Use chromedp.ExecAllocator approach with minimal automation flags
-	chromeOpts := []chromedp.ExecAllocatorOption{
-		chromedp.NoFirstRun,
-		chromedp.NoDefaultBrowserCheck,
-		chromedp.UserDataDir(ba.tempDir),
-		chromedp.Flag("headless", !ba.debug),
-		chromedp.Flag("window-size", "1280,800"),
-		chromedp.Flag("new-window", true),
-		chromedp.Flag("no-first-run", true),
-		chromedp.Flag("disable-default-apps", true),
-		chromedp.Flag("remote-debugging-port", "0"), // Use random port
-
-		// Use the appropriate browser executable for this profile type
-		chromedp.ExecPath(getBrowserPathForProfile(selectedProfile.Browser)),
+	ctx, cancel, err := ba.newAuthContext(ba.tempDir, selectedProfile.Browser)
+	if err != nil {
+		return "", "", fmt.Errorf("start auth browser: %w", err)
 	}
-
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), chromeOpts...)
-	ba.cancel = allocCancel
-	ctx, cancel = chromedp.NewContext(allocCtx)
 	defer cancel()
-
-	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	if ba.debug {
-		ctx, _ = chromedp.NewContext(ctx, chromedp.WithLogf(func(format string, args ...interface{}) {
-			fmt.Printf("ChromeDP: "+format+"\n", args...)
-		}))
-	}
 
 	return ba.extractAuthDataForURL(ctx, o.TargetURL)
 }
@@ -788,31 +756,46 @@ func (ba *BrowserAuth) copyProfileDataFromPath(sourceDir string) error {
 		return fmt.Errorf("create profile dir: %w", err)
 	}
 
-	// Copy only essential files for authentication (not entire profile)
+	// Copy only essential files for authentication (not entire profile).
+	// Paths are relative to the profile directory; Chrome moved Cookies into
+	// the Network/ subdirectory starting in v96, so list both locations.
 	essentialFiles := []string{
-		"Cookies",            // Authentication cookies
-		"Cookies-journal",    // Cookie database journal
-		"Login Data",         // Saved login information
-		"Login Data-journal", // Login database journal
-		"Web Data",           // Form data and autofill
-		"Web Data-journal",   // Web data journal
-		"Preferences",        // Browser preferences
-		"Secure Preferences", // Secure browser settings
+		"Network/Cookies",         // Authentication cookies (Chrome v96+)
+		"Network/Cookies-journal", // Cookie database journal
+		"Network/Cookies-wal",     // Cookie WAL (uncommitted writes)
+		"Network/Cookies-shm",     // Cookie WAL shared memory
+		"Cookies",                 // Legacy cookie location
+		"Cookies-journal",         // Legacy cookie journal
+		"Cookies-wal",             // Legacy cookie WAL
+		"Cookies-shm",             // Legacy cookie WAL shared memory
+		"Login Data",              // Saved login information
+		"Login Data-journal",      // Login database journal
+		"Web Data",                // Form data and autofill
+		"Web Data-journal",        // Web data journal
+		"Preferences",             // Browser preferences
+		"Secure Preferences",      // Secure browser settings
 	}
 
 	copiedCount := 0
-	for _, file := range essentialFiles {
-		srcPath := filepath.Join(sourceDir, file)
-		dstPath := filepath.Join(defaultDir, file)
+	for _, rel := range essentialFiles {
+		srcPath := filepath.Join(sourceDir, rel)
+		dstPath := filepath.Join(defaultDir, rel)
 
 		// Check if source file exists
 		if _, err := os.Stat(srcPath); os.IsNotExist(err) {
 			continue // Skip if file doesn't exist
 		}
 
+		if err := os.MkdirAll(filepath.Dir(dstPath), 0755); err != nil {
+			if ba.debug {
+				fmt.Printf("Warning: Failed to create dir for %s: %v\n", rel, err)
+			}
+			continue
+		}
+
 		if err := copyFile(srcPath, dstPath); err != nil {
 			if ba.debug {
-				fmt.Printf("Warning: Failed to copy %s: %v\n", file, err)
+				fmt.Printf("Warning: Failed to copy %s: %v\n", rel, err)
 			}
 			continue
 		}
@@ -823,10 +806,22 @@ func (ba *BrowserAuth) copyProfileDataFromPath(sourceDir string) error {
 		fmt.Printf("Copied %d essential files for authentication\n", copiedCount)
 	}
 
-	// Create minimal Local State file
-	localState := `{"os_crypt":{"encrypted_key":""}}`
-	if err := os.WriteFile(filepath.Join(ba.tempDir, "Local State"), []byte(localState), 0644); err != nil {
-		return fmt.Errorf("write local state: %w", err)
+	// Copy the real Local State so Chrome can decrypt cookie values.
+	// The encrypted_key is DPAPI-encrypted to the current OS user, so it
+	// still decrypts when launched from a different user-data-dir path.
+	srcLocalState := filepath.Join(filepath.Dir(sourceDir), "Local State")
+	dstLocalState := filepath.Join(ba.tempDir, "Local State")
+	if _, err := os.Stat(srcLocalState); err == nil {
+		if err := copyFile(srcLocalState, dstLocalState); err != nil {
+			if ba.debug {
+				fmt.Printf("Warning: Failed to copy Local State: %v\n", err)
+			}
+		}
+	} else {
+		localState := `{"os_crypt":{"encrypted_key":""}}`
+		if err := os.WriteFile(dstLocalState, []byte(localState), 0644); err != nil {
+			return fmt.Errorf("write local state: %w", err)
+		}
 	}
 
 	return nil
@@ -852,8 +847,9 @@ func findMostRecentProfile(profilePath string) string {
 			continue
 		}
 
-		// Check for existence of key files that indicate it's a valid profile
-		validFiles := []string{"Cookies", "Login Data", "History"}
+		// Check for existence of key files that indicate it's a valid profile.
+		// Chrome v96+ moved Cookies into the Network/ subdirectory.
+		validFiles := []string{"Network/Cookies", "Cookies", "Login Data", "History"}
 		hasValidFiles := false
 
 		for _, file := range validFiles {
@@ -885,27 +881,80 @@ func findMostRecentProfile(profilePath string) string {
 	return mostRecent
 }
 
-func (ba *BrowserAuth) startChromeExec() (string, error) {
+func (ba *BrowserAuth) newAuthContext(userDataDir, browserName string) (context.Context, context.CancelFunc, error) {
+	if ba.debug {
+		debugURL, err := ba.startChromeExec(getBrowserPathForProfile(browserName), userDataDir)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), debugURL)
+		ctx, cancel := chromedp.NewContext(allocCtx, chromedp.WithLogf(func(format string, args ...interface{}) {
+			fmt.Printf("ChromeDP: "+format+"\n", args...)
+		}))
+		ctx, timeoutCancel := context.WithTimeout(ctx, ba.authAttemptTimeout())
+		cancelAll := func() {
+			timeoutCancel()
+			cancel()
+			allocCancel()
+		}
+		ba.cancel = cancelAll
+		return ctx, cancelAll, nil
+	}
+
+	opts := []chromedp.ExecAllocatorOption{
+		chromedp.NoFirstRun,
+		chromedp.NoDefaultBrowserCheck,
+		chromedp.UserDataDir(userDataDir),
+		chromedp.Flag("headless", true),
+		chromedp.Flag("window-size", "1280,800"),
+		chromedp.Flag("new-window", true),
+		chromedp.Flag("no-first-run", true),
+		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("remote-debugging-port", "0"),
+
+		// Anti-detection flags
+		chromedp.Flag("disable-blink-features", "AutomationControlled"),
+		chromedp.Flag("exclude-switches", "enable-automation"),
+		chromedp.Flag("disable-extensions-except", ""),
+		chromedp.Flag("disable-plugins-discovery", true),
+		chromedp.Flag("disable-dev-shm-usage", true),
+		chromedp.Flag("no-sandbox", false),
+
+		chromedp.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+		chromedp.ExecPath(getBrowserPathForProfile(browserName)),
+	}
+
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
+	ctx, cancel := chromedp.NewContext(allocCtx)
+	ctx, timeoutCancel := context.WithTimeout(ctx, ba.authAttemptTimeout())
+	cancelAll := func() {
+		timeoutCancel()
+		cancel()
+		allocCancel()
+	}
+	ba.cancel = cancelAll
+	return ctx, cancelAll, nil
+}
+
+func (ba *BrowserAuth) startChromeExec(browserPath, userDataDir string) (string, error) {
 	debugPort := "9222"
 	debugURL := fmt.Sprintf("http://localhost:%s", debugPort)
 
-	chromePath := getChromePath()
-	if chromePath == "" {
+	if browserPath == "" {
 		return "", fmt.Errorf("chrome not found")
 	}
 
 	if ba.debug {
-		fmt.Printf("Starting Chrome from: %s\n", chromePath)
-		fmt.Printf("Using profile: %s\n", ba.tempDir)
+		fmt.Printf("Starting Chrome from: %s\n", browserPath)
+		fmt.Printf("Using profile: %s\n", userDataDir)
 	}
 
-	ba.chromeCmd = exec.Command(chromePath,
+	ba.chromeCmd = exec.Command(browserPath,
 		fmt.Sprintf("--remote-debugging-port=%s", debugPort),
-		fmt.Sprintf("--user-data-dir=%s", ba.tempDir),
+		fmt.Sprintf("--user-data-dir=%s", userDataDir),
 		"--no-first-run",
 		"--no-default-browser-check",
-		"--disable-extensions",
-		"--disable-sync",
 		"--window-size=1280,800",
 	)
 
@@ -1108,51 +1157,65 @@ func (ba *BrowserAuth) extractAuthDataForURL(ctx context.Context, targetURL stri
 		time.Sleep(time.Duration(ba.keepOpenSeconds) * time.Second)
 	}
 
-	// First check if we're already on a login page, which would indicate authentication failure
+	// Check whether we're already on a login page. That should trigger a
+	// manual-login wait, not an immediate failure.
 	var currentURL string
+	waitingForManualLogin := false
 	if err := chromedp.Run(ctx, chromedp.Location(&currentURL)); err == nil {
 		// Log the initial URL we landed on
 		if ba.debug {
 			fmt.Printf("Initial navigation landed on: %s\n", currentURL)
 		}
 
-		// If we immediately landed on an auth page, this profile is likely not authenticated
-		if strings.Contains(currentURL, "accounts.google.com") ||
-			strings.Contains(currentURL, "signin") ||
-			strings.Contains(currentURL, "login") {
+		if isAuthPageURL(currentURL) {
+			waitingForManualLogin = true
 			if ba.debug {
 				fmt.Printf("Redirected to auth page: %s\n", currentURL)
 			}
-
-			return "", "", fmt.Errorf("redirected to authentication page - not logged in")
+			fmt.Println("Sign-in page detected. Waiting for manual login to complete...")
 		}
 	}
 
-	// Create timeout context for polling - increased timeout for better success with Brave
-	pollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	autoPollDeadline := time.Now().Add(defaultAuthPollTimeout)
 
 	authFailCount := 0   // Count consecutive auth failures
 	maxAuthFailures := 3 // Max consecutive failures before giving up
 
 	for {
 		select {
-		case <-pollCtx.Done():
+		case <-ctx.Done():
 			var finalURL string
 			_ = chromedp.Run(ctx, chromedp.Location(&finalURL))
 
+			if waitingForManualLogin {
+				return "", "", fmt.Errorf("timed out waiting for manual login to complete (URL: %s)", finalURL)
+			}
 			return "", "", fmt.Errorf("auth data not found after timeout (URL: %s)", finalURL)
 
 		case <-ticker.C:
+			if !waitingForManualLogin && time.Now().After(autoPollDeadline) {
+				var finalURL string
+				_ = chromedp.Run(ctx, chromedp.Location(&finalURL))
+				return "", "", fmt.Errorf("auth data not found after timeout (URL: %s)", finalURL)
+			}
+
 			token, cookies, err = ba.tryExtractAuth(ctx)
 			if err != nil {
+				if isManualLoginError(err) {
+					if !waitingForManualLogin {
+						waitingForManualLogin = true
+						if ba.debug {
+							fmt.Printf("Waiting for manual login after auth check: %v\n", err)
+						}
+						fmt.Println("Sign-in page detected. Waiting for manual login to complete...")
+					}
+					continue
+				}
+
 				// Count specific failures that indicate we're definitely not authenticated
-				if strings.Contains(err.Error(), "sign-in") ||
-					strings.Contains(err.Error(), "login") ||
-					strings.Contains(err.Error(), "missing essential") {
+				if strings.Contains(err.Error(), "missing essential") {
 					authFailCount++
 
 					// If we've had too many clear auth failures, give up earlier
@@ -1181,8 +1244,7 @@ func (ba *BrowserAuth) extractAuthDataForURL(ctx context.Context, targetURL stri
 					}
 
 					// Double-check we're not on a login page (shouldn't happen with our improved checks)
-					if strings.Contains(successURL, "accounts.google.com") ||
-						strings.Contains(successURL, "signin") {
+					if isAuthPageURL(successURL) {
 						return "", "", fmt.Errorf("authentication appeared to succeed but we're on login page: %s", successURL)
 					}
 				}
@@ -1248,9 +1310,7 @@ func (ba *BrowserAuth) tryExtractAuth(ctx context.Context) (token, cookies strin
 	var currentURL string
 	err = chromedp.Run(ctx, chromedp.Location(&currentURL))
 	if err == nil {
-		if strings.Contains(currentURL, "accounts.google.com") ||
-			strings.Contains(currentURL, "signin") ||
-			strings.Contains(currentURL, "login") {
+		if isAuthPageURL(currentURL) {
 			return "", "", fmt.Errorf("detected sign-in URL: %s", currentURL)
 		}
 	}
