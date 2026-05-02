@@ -22,3 +22,4 @@ Login Data
 Web Data
 *.db
 *.db-*
+*.exe
