@@ -1,8 +1,10 @@
 package auth
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +71,78 @@ func TestCopyProfileDataFromPathCopiesNetworkCookiesAndLocalState(t *testing.T) 
 	}
 	if string(copiedLocalState) != localState {
 		t.Fatalf("copied Local State = %q, want %q", copiedLocalState, localState)
+	}
+}
+
+func TestPrepareProfileLaunchUsesOriginalProfileDirectory(t *testing.T) {
+	userDataDir := t.TempDir()
+	profileDir := filepath.Join(userDataDir, "Profile 1")
+	writeProfileTestFile(t, filepath.Join(profileDir, "Network", "Cookies"), "cookie-db")
+
+	ba := &BrowserAuth{}
+	plan, err := ba.prepareProfileLaunch(ProfileInfo{Name: "Profile 1", Path: profileDir, Browser: "Chrome"}, false, true)
+	if err != nil {
+		t.Fatalf("prepareProfileLaunch() error = %v", err)
+	}
+	if plan.UserDataDir != userDataDir {
+		t.Fatalf("plan.UserDataDir = %q, want %q", plan.UserDataDir, userDataDir)
+	}
+	if plan.ProfileDirectory != "Profile 1" {
+		t.Fatalf("plan.ProfileDirectory = %q, want Profile 1", plan.ProfileDirectory)
+	}
+	if !plan.UsesOriginal {
+		t.Fatalf("plan.UsesOriginal = false, want true")
+	}
+	if ba.tempDir != "" {
+		t.Fatalf("ba.tempDir = %q, want empty when using original profile", ba.tempDir)
+	}
+}
+
+func TestShouldUseOriginalProfileRequiresExplicitOptIn(t *testing.T) {
+	t.Setenv("NLM_USE_ORIGINAL_PROFILE", "")
+	t.Setenv("NLM_COPY_PROFILE", "")
+
+	if got := shouldUseOriginalProfile(&Options{}); got {
+		t.Fatalf("shouldUseOriginalProfile(default) = true, want false")
+	}
+
+	if got := shouldUseOriginalProfile(&Options{UseOriginalProfile: true}); !got {
+		t.Fatalf("shouldUseOriginalProfile(explicit original) = false, want true")
+	}
+
+	t.Setenv("NLM_USE_ORIGINAL_PROFILE", "1")
+	if got := shouldUseOriginalProfile(&Options{}); !got {
+		t.Fatalf("shouldUseOriginalProfile(env original) = false, want true")
+	}
+}
+
+func TestChromeProfileAppearsInUse(t *testing.T) {
+	userDataDir := t.TempDir()
+	if chromeProfileAppearsInUse(userDataDir) {
+		t.Fatalf("chromeProfileAppearsInUse() = true, want false")
+	}
+
+	writeProfileTestFile(t, filepath.Join(userDataDir, "SingletonLock"), "lock")
+	if !chromeProfileAppearsInUse(userDataDir) {
+		t.Fatalf("chromeProfileAppearsInUse() = false, want true")
+	}
+}
+
+func TestExplainOriginalProfileStartupError(t *testing.T) {
+	plan := profileLaunchPlan{UsesOriginal: true, ProfileDirectory: "Default"}
+	err := explainOriginalProfileStartupError(fmt.Errorf("failed to load page: websocket url timeout reached"), plan)
+	if err == nil {
+		t.Fatalf("explainOriginalProfileStartupError() = nil, want error")
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(err.Error(), "Chrome may already be running without remote debugging") {
+		t.Fatalf("error = %q, want Windows remote-debugging guidance", err)
+	}
+}
+
+func TestDetectLocalRemoteCDPURLReturnsEmptyWhenUnavailable(t *testing.T) {
+	ba := &BrowserAuth{}
+	if got := ba.detectLocalRemoteCDPURL(false); got != "" {
+		t.Fatalf("detectLocalRemoteCDPURL(false) = %q, want empty", got)
 	}
 }
 

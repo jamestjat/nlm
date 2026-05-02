@@ -30,14 +30,16 @@ func maskProfileName(profile string) string {
 
 // AuthOptions contains the CLI options for the auth command
 type AuthOptions struct {
-	TryAllProfiles  bool
-	ProfileName     string
-	TargetURL       string
-	CheckNotebooks  bool
-	Debug           bool
-	Help            bool
-	KeepOpenSeconds int
-	RemoteCDPURL    string
+	TryAllProfiles     bool
+	ProfileName        string
+	TargetURL          string
+	CheckNotebooks     bool
+	Debug              bool
+	Help               bool
+	KeepOpenSeconds    int
+	RemoteCDPURL       string
+	UseOriginalProfile bool
+	CopyProfile        bool
 }
 
 func parseAuthFlags(args []string) (*AuthOptions, []string, error) {
@@ -66,6 +68,8 @@ func parseAuthFlags(args []string) (*AuthOptions, []string, error) {
 	authFlags.IntVar(&opts.KeepOpenSeconds, "k", 0, "Keep browser open for N seconds after successful auth (shorthand)")
 	authFlags.StringVar(&opts.RemoteCDPURL, "cdp-url", "", "Remote CDP WebSocket URL (e.g. ws://localhost:9222)")
 	authFlags.StringVar(&opts.RemoteCDPURL, "c", "", "Remote CDP WebSocket URL (shorthand)")
+	authFlags.BoolVar(&opts.UseOriginalProfile, "use-original-profile", false, "Use the real browser profile directory instead of copying profile data")
+	authFlags.BoolVar(&opts.CopyProfile, "copy-profile", false, "Force the legacy temp-profile copy strategy")
 
 	// Set custom usage
 	authFlags.Usage = func() {
@@ -78,6 +82,8 @@ func parseAuthFlags(args []string) (*AuthOptions, []string, error) {
 		fmt.Fprintf(os.Stderr, "Example: nlm auth login -profile Work\n")
 		fmt.Fprintf(os.Stderr, "Example: nlm auth login -keep-open 10\n")
 		fmt.Fprintf(os.Stderr, "Example: nlm auth -cdp-url ws://localhost:9222\n")
+		fmt.Fprintf(os.Stderr, "Example: nlm auth --use-original-profile --profile Default\n")
+		fmt.Fprintf(os.Stderr, "Windows: default auth opens an isolated Chrome login window. Chrome 136+ cannot remote-debug the normal default profile.\n")
 		fmt.Fprintf(os.Stderr, "Example: nlm auth -all\n")
 	}
 
@@ -239,6 +245,12 @@ func handleAuth(args []string, debug bool) (string, string, error) {
 
 	if opts.RemoteCDPURL != "" {
 		authOpts = append(authOpts, auth.WithRemoteCDPURL(opts.RemoteCDPURL))
+	}
+	if opts.UseOriginalProfile {
+		authOpts = append(authOpts, auth.WithUseOriginalProfile())
+	}
+	if opts.CopyProfile {
+		authOpts = append(authOpts, auth.WithCopyProfile())
 	}
 
 	// Get auth data (use GetAuthData to capture session ID and BL param)

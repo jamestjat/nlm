@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -78,14 +79,16 @@ func (ba *BrowserAuth) Cleanup() {
 }
 
 type Options struct {
-	ProfileName       string
-	TryAllProfiles    bool
-	ScanBeforeAuth    bool
-	TargetURL         string
-	PreferredBrowsers []string
-	CheckNotebooks    bool
-	KeepOpenSeconds   int    // Keep browser open for N seconds after auth
-	RemoteCDPURL      string // Remote CDP WebSocket URL (e.g. "ws://localhost:9222")
+	ProfileName        string
+	TryAllProfiles     bool
+	ScanBeforeAuth     bool
+	TargetURL          string
+	PreferredBrowsers  []string
+	CheckNotebooks     bool
+	KeepOpenSeconds    int    // Keep browser open for N seconds after auth
+	RemoteCDPURL       string // Remote CDP WebSocket URL (e.g. "ws://localhost:9222")
+	UseOriginalProfile bool   // Launch against the real browser user-data-dir instead of a copied profile
+	CopyProfile        bool   // Force the legacy temp-profile copy strategy
 }
 
 type Option func(*Options)
@@ -100,10 +103,13 @@ func WithPreferredBrowsers(browsers []string) Option {
 func WithCheckNotebooks() Option             { return func(o *Options) { o.CheckNotebooks = true } }
 func WithKeepOpenSeconds(seconds int) Option { return func(o *Options) { o.KeepOpenSeconds = seconds } }
 func WithRemoteCDPURL(url string) Option     { return func(o *Options) { o.RemoteCDPURL = url } }
+func WithUseOriginalProfile() Option         { return func(o *Options) { o.UseOriginalProfile = true } }
+func WithCopyProfile() Option                { return func(o *Options) { o.CopyProfile = true } }
 
 const (
 	defaultAuthAttemptTimeout = 5 * time.Minute
 	defaultAuthPollTimeout    = 30 * time.Second
+	defaultRemoteCDPURL       = "http://localhost:9222"
 )
 
 func (ba *BrowserAuth) authAttemptTimeout() time.Duration {
@@ -158,8 +164,37 @@ func (ba *BrowserAuth) authViaRemoteCDP(remoteCDPURL, targetURL string) (token, 
 	return ba.extractAuthDataForURL(ctx, targetURL)
 }
 
+func (ba *BrowserAuth) detectLocalRemoteCDPURL(useOriginalProfile bool) string {
+	if runtime.GOOS != "windows" || !useOriginalProfile {
+		return ""
+	}
+
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	resp, err := client.Get(defaultRemoteCDPURL + "/json/version")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+
+	if ba.debug {
+		fmt.Fprintf(os.Stderr, "Found existing Chrome remote debugging session at %s\n", defaultRemoteCDPURL)
+	}
+	return defaultRemoteCDPURL
+}
+
+type profileLaunchPlan struct {
+	UserDataDir      string
+	ProfileDirectory string
+	UsesOriginal     bool
+	IsIsolated       bool
+}
+
 // tryMultipleProfiles attempts to authenticate using each profile until one succeeds
-func (ba *BrowserAuth) tryMultipleProfiles(targetURL string) (token, cookies string, err error) {
+func (ba *BrowserAuth) tryMultipleProfiles(targetURL string, copyProfile, useOriginalProfile bool) (token, cookies string, err error) {
 	// Scan all profiles from all browsers
 	profiles, err := ba.scanProfiles()
 	if err != nil {
@@ -195,39 +230,21 @@ func (ba *BrowserAuth) tryMultipleProfiles(targetURL string) (token, cookies str
 		// Clean up previous attempts
 		ba.cleanup()
 
-		// Check if we should use original profile directory
-		useOriginal := os.Getenv("NLM_USE_ORIGINAL_PROFILE")
-		if ba.debug {
-			fmt.Printf("NLM_USE_ORIGINAL_PROFILE=%s\n", useOriginal)
-		}
-
-		var userDataDir string
-		if useOriginal == "1" {
-			// Use parent directory of the profile path for session continuity
-			userDataDir = filepath.Dir(profile.Path)
+		plan, err := ba.prepareProfileLaunch(profile, copyProfile, useOriginalProfile)
+		if err != nil {
 			if ba.debug {
-				fmt.Printf("Using original profile directory: %s\n", userDataDir)
+				fmt.Printf("Error preparing profile %s [%s]: %v\n", profile.Name, profile.Browser, err)
 			}
-		} else {
-			// Create a temporary directory and copy the profile data
-			tempDir, err := os.MkdirTemp("", "nlm-chrome-*")
-			if err != nil {
-				continue
+			continue
+		}
+		if err := validateProfileLaunchPlan(plan); err != nil {
+			if ba.debug {
+				fmt.Printf("Profile %s [%s] cannot be launched directly: %v\n", profile.Name, profile.Browser, err)
 			}
-			ba.tempDir = tempDir
-			userDataDir = tempDir
-
-			// Copy the entire profile directory to temp location
-			if err := ba.copyProfileDataFromPath(profile.Path); err != nil {
-				if ba.debug {
-					fmt.Printf("Error copying profile %s: %v\n", profile.Name, err)
-				}
-				os.RemoveAll(tempDir)
-				continue
-			}
+			continue
 		}
 
-		ctx, cancel, err := ba.newAuthContext(userDataDir, profile.Browser)
+		ctx, cancel, err := ba.newAuthContext(plan.UserDataDir, profile.Browser, plan.ProfileDirectory)
 		if err != nil {
 			if ba.debug {
 				fmt.Printf("Error starting auth browser for %s [%s]: %v\n", profile.Name, profile.Browser, err)
@@ -237,6 +254,9 @@ func (ba *BrowserAuth) tryMultipleProfiles(targetURL string) (token, cookies str
 		defer cancel()
 
 		token, cookies, err = ba.extractAuthDataForURL(ctx, targetURL)
+		if err != nil {
+			err = explainOriginalProfileStartupError(err, plan)
+		}
 		if err == nil && token != "" {
 			if ba.debug {
 				fmt.Printf("Successfully authenticated with profile: %s [%s]\n", profile.Name, profile.Browser)
@@ -482,9 +502,14 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 	// Store keep-open setting in the struct
 	ba.keepOpenSeconds = o.KeepOpenSeconds
 
+	useOriginalProfile := shouldUseOriginalProfile(o)
+
 	// If a remote CDP URL is provided, connect to it directly
 	if o.RemoteCDPURL != "" {
 		return ba.authViaRemoteCDP(o.RemoteCDPURL, o.TargetURL)
+	}
+	if url := ba.detectLocalRemoteCDPURL(useOriginalProfile); url != "" {
+		return ba.authViaRemoteCDP(url, o.TargetURL)
 	}
 
 	defer ba.cleanup()
@@ -537,28 +562,23 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 				if shouldCheck {
 					fmt.Printf("  Checking notebooks for %s [%s]...", p.Name, p.Browser)
 
-					// Set up a temporary Chrome instance to authenticate
-					tempDir, err := os.MkdirTemp("", "nlm-notebook-check-*")
-					if err != nil {
-						fmt.Println(" Error: could not create temp dir")
-						updatedProfiles = append(updatedProfiles, p)
-						continue
-					}
-
 					// Create a temporary BrowserAuth
 					tempAuth := &BrowserAuth{
-						debug:   false,
-						tempDir: tempDir,
+						debug: false,
 					}
-					defer os.RemoveAll(tempDir)
 
-					// Copy profile data
-					err = tempAuth.copyProfileDataFromPath(p.Path)
+					plan, err := tempAuth.prepareProfileLaunch(p, o.CopyProfile, useOriginalProfile)
 					if err != nil {
-						fmt.Println(" Error: could not copy profile data")
+						fmt.Println(" Error: could not prepare profile")
 						updatedProfiles = append(updatedProfiles, p)
 						continue
 					}
+					if err := validateProfileLaunchPlan(plan); err != nil {
+						fmt.Printf(" Skipped: %v\n", err)
+						updatedProfiles = append(updatedProfiles, p)
+						continue
+					}
+					defer tempAuth.cleanup()
 
 					// Try to authenticate
 					authCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -570,7 +590,10 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 						chromedp.DisableGPU,
 						chromedp.Flag("disable-extensions", true),
 						chromedp.Flag("headless", true),
-						chromedp.UserDataDir(tempDir),
+						chromedp.UserDataDir(plan.UserDataDir),
+					}
+					if plan.ProfileDirectory != "" {
+						opts = append(opts, chromedp.Flag("profile-directory", plan.ProfileDirectory))
 					}
 
 					allocCtx, allocCancel := chromedp.NewExecAllocator(authCtx, opts...)
@@ -653,7 +676,7 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 
 	// If trying all profiles, try to find one that works
 	if o.TryAllProfiles {
-		return ba.tryMultipleProfiles(o.TargetURL)
+		return ba.tryMultipleProfiles(o.TargetURL, o.CopyProfile, useOriginalProfile)
 	}
 
 	// Find the actual profile to use (similar to multi-profile approach)
@@ -684,25 +707,120 @@ func (ba *BrowserAuth) GetAuth(opts ...Option) (token, cookies string, err error
 		return "", "", fmt.Errorf("no valid profiles found")
 	}
 
-	// Create a temporary directory and copy profile data to preserve encryption keys
-	tempDir, err := os.MkdirTemp("", "nlm-chrome-*")
+	plan, err := ba.prepareProfileLaunch(*selectedProfile, o.CopyProfile, useOriginalProfile)
 	if err != nil {
-		return "", "", fmt.Errorf("create temp dir: %w", err)
+		return "", "", err
 	}
-	ba.tempDir = tempDir
-
-	// Copy the profile data
-	if err := ba.copyProfileDataFromPath(selectedProfile.Path); err != nil {
-		return "", "", fmt.Errorf("copy profile: %w", err)
+	if err := validateProfileLaunchPlan(plan); err != nil {
+		return "", "", err
 	}
 
-	ctx, cancel, err := ba.newAuthContext(ba.tempDir, selectedProfile.Browser)
+	ctx, cancel, err := ba.newAuthContext(plan.UserDataDir, selectedProfile.Browser, plan.ProfileDirectory)
 	if err != nil {
 		return "", "", fmt.Errorf("start auth browser: %w", err)
 	}
 	defer cancel()
 
-	return ba.extractAuthDataForURL(ctx, o.TargetURL)
+	token, cookies, err = ba.extractAuthDataForURL(ctx, o.TargetURL)
+	if err != nil {
+		return "", "", explainOriginalProfileStartupError(err, plan)
+	}
+	return token, cookies, nil
+}
+
+func shouldUseOriginalProfile(o *Options) bool {
+	if o.UseOriginalProfile || os.Getenv("NLM_USE_ORIGINAL_PROFILE") == "1" {
+		return true
+	}
+	return false
+}
+
+func (ba *BrowserAuth) prepareProfileLaunch(profile ProfileInfo, copyProfile, useOriginalProfile bool) (profileLaunchPlan, error) {
+	if useOriginalProfile {
+		userDataDir := filepath.Dir(profile.Path)
+		if ba.debug {
+			fmt.Printf("Using original profile directory: %s (profile: %s)\n", userDataDir, profile.Name)
+		}
+		return profileLaunchPlan{
+			UserDataDir:      userDataDir,
+			ProfileDirectory: profile.Name,
+			UsesOriginal:     true,
+		}, nil
+	}
+
+	if runtime.GOOS == "windows" && !copyProfile && os.Getenv("NLM_COPY_PROFILE") != "1" {
+		tempDir, err := os.MkdirTemp("", "nlm-chrome-auth-*")
+		if err != nil {
+			return profileLaunchPlan{}, fmt.Errorf("create temp auth profile: %w", err)
+		}
+		ba.tempDir = tempDir
+		if ba.debug {
+			fmt.Printf("Using isolated Chrome auth profile: %s\n", tempDir)
+		}
+		return profileLaunchPlan{
+			UserDataDir:      tempDir,
+			ProfileDirectory: "Default",
+			IsIsolated:       true,
+		}, nil
+	}
+
+	tempDir, err := os.MkdirTemp("", "nlm-chrome-*")
+	if err != nil {
+		return profileLaunchPlan{}, fmt.Errorf("create temp dir: %w", err)
+	}
+	ba.tempDir = tempDir
+
+	if err := ba.copyProfileDataFromPath(profile.Path); err != nil {
+		os.RemoveAll(tempDir)
+		ba.tempDir = ""
+		return profileLaunchPlan{}, fmt.Errorf("copy profile: %w", err)
+	}
+
+	return profileLaunchPlan{
+		UserDataDir:      tempDir,
+		ProfileDirectory: "Default",
+	}, nil
+}
+
+func validateProfileLaunchPlan(plan profileLaunchPlan) error {
+	if !plan.UsesOriginal || runtime.GOOS != "windows" {
+		return nil
+	}
+
+	if !chromeProfileAppearsInUse(plan.UserDataDir) {
+		return nil
+	}
+
+	return fmt.Errorf("Chrome profile %q is already in use. Close all Chrome windows and retry, or start Chrome with --remote-debugging-port=9222 and run `nlm auth --cdp-url http://localhost:9222`", plan.ProfileDirectory)
+}
+
+func explainOriginalProfileStartupError(err error, plan profileLaunchPlan) error {
+	if err == nil || !plan.UsesOriginal || runtime.GOOS != "windows" {
+		return err
+	}
+
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "websocket url timeout") ||
+		strings.Contains(message, "chrome failed to start") ||
+		strings.Contains(message, "timeout waiting for chrome debugger") {
+		return fmt.Errorf("%w; Chrome may already be running without remote debugging. Close all Chrome windows and retry, or start Chrome with --remote-debugging-port=9222 and run `nlm auth --cdp-url http://localhost:9222`", err)
+	}
+
+	return err
+}
+
+func chromeProfileAppearsInUse(userDataDir string) bool {
+	lockFiles := []string{
+		"SingletonLock",
+		"SingletonCookie",
+		"SingletonSocket",
+	}
+	for _, name := range lockFiles {
+		if _, err := os.Stat(filepath.Join(userDataDir, name)); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // copyProfileData first resolves the profile name to a path and then calls copyProfileDataFromPath
@@ -881,9 +999,9 @@ func findMostRecentProfile(profilePath string) string {
 	return mostRecent
 }
 
-func (ba *BrowserAuth) newAuthContext(userDataDir, browserName string) (context.Context, context.CancelFunc, error) {
-	if ba.debug {
-		debugURL, err := ba.startChromeExec(getBrowserPathForProfile(browserName), userDataDir)
+func (ba *BrowserAuth) newAuthContext(userDataDir, browserName, profileDirectory string) (context.Context, context.CancelFunc, error) {
+	if ba.debug || runtime.GOOS == "windows" {
+		debugURL, err := ba.startChromeExec(getBrowserPathForProfile(browserName), userDataDir, profileDirectory)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -924,6 +1042,9 @@ func (ba *BrowserAuth) newAuthContext(userDataDir, browserName string) (context.
 		chromedp.UserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 		chromedp.ExecPath(getBrowserPathForProfile(browserName)),
 	}
+	if profileDirectory != "" {
+		opts = append(opts, chromedp.Flag("profile-directory", profileDirectory))
+	}
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	ctx, cancel := chromedp.NewContext(allocCtx)
@@ -937,7 +1058,7 @@ func (ba *BrowserAuth) newAuthContext(userDataDir, browserName string) (context.
 	return ctx, cancelAll, nil
 }
 
-func (ba *BrowserAuth) startChromeExec(browserPath, userDataDir string) (string, error) {
+func (ba *BrowserAuth) startChromeExec(browserPath, userDataDir, profileDirectory string) (string, error) {
 	debugPort := "9222"
 	debugURL := fmt.Sprintf("http://localhost:%s", debugPort)
 
@@ -949,14 +1070,22 @@ func (ba *BrowserAuth) startChromeExec(browserPath, userDataDir string) (string,
 		fmt.Printf("Starting Chrome from: %s\n", browserPath)
 		fmt.Printf("Using profile: %s\n", userDataDir)
 	}
+	if runtime.GOOS == "windows" {
+		fmt.Println("Opening an isolated Chrome auth window. Log in to NotebookLM there if prompted.")
+	}
 
-	ba.chromeCmd = exec.Command(browserPath,
+	args := []string{
 		fmt.Sprintf("--remote-debugging-port=%s", debugPort),
 		fmt.Sprintf("--user-data-dir=%s", userDataDir),
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--window-size=1280,800",
-	)
+	}
+	if profileDirectory != "" {
+		args = append(args, fmt.Sprintf("--profile-directory=%s", profileDirectory))
+	}
+
+	ba.chromeCmd = exec.Command(browserPath, args...)
 
 	if ba.debug {
 		ba.chromeCmd.Stdout = os.Stdout
@@ -969,6 +1098,9 @@ func (ba *BrowserAuth) startChromeExec(browserPath, userDataDir string) (string,
 
 	if err := ba.waitForDebugger(debugURL); err != nil {
 		ba.cleanup()
+		if runtime.GOOS == "windows" && profileDirectory != "" {
+			return "", fmt.Errorf("%w; Chrome may already be running without remote debugging. Close Chrome and retry, or start Chrome with --remote-debugging-port=%s and use nlm auth --cdp-url %s", err, debugPort, debugURL)
+		}
 		return "", err
 	}
 
@@ -1429,25 +1561,26 @@ func (ba *BrowserAuth) DownloadWithBrowser(urlToDownload string, profileName str
 		return nil, fmt.Errorf("no valid profiles found")
 	}
 
-	// Create temp dir and copy profile
-	tempDir, err := os.MkdirTemp("", "nlm-download-*")
-	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
-	}
-	ba.tempDir = tempDir
 	defer ba.cleanup()
 
-	if err := ba.copyProfileDataFromPath(selectedProfile.Path); err != nil {
-		return nil, fmt.Errorf("copy profile: %w", err)
+	plan, err := ba.prepareProfileLaunch(*selectedProfile, os.Getenv("NLM_COPY_PROFILE") == "1", shouldUseOriginalProfile(&Options{}))
+	if err != nil {
+		return nil, err
+	}
+	if err := validateProfileLaunchPlan(plan); err != nil {
+		return nil, err
 	}
 
 	// Set up chromedp
 	opts := []chromedp.ExecAllocatorOption{
 		chromedp.NoFirstRun,
 		chromedp.NoDefaultBrowserCheck,
-		chromedp.UserDataDir(ba.tempDir),
+		chromedp.UserDataDir(plan.UserDataDir),
 		chromedp.Flag("headless", true),
 		chromedp.ExecPath(getBrowserPathForProfile(selectedProfile.Browser)),
+	}
+	if plan.ProfileDirectory != "" {
+		opts = append(opts, chromedp.Flag("profile-directory", plan.ProfileDirectory))
 	}
 
 	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), opts...)
