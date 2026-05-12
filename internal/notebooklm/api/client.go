@@ -257,6 +257,11 @@ func detectMIMEType(content []byte, filename string, providedType string) string
 		return providedType
 	}
 
+	ext := strings.ToLower(filepath.Ext(filename))
+	if mimeType := notebookLMUploadMIMEType(ext); mimeType != "" {
+		return mimeType
+	}
+
 	// Try content-based detection first
 	detectedType := http.DetectContentType(content)
 
@@ -272,7 +277,6 @@ func detectMIMEType(content []byte, filename string, providedType string) string
 	}
 
 	// Try extension-based detection
-	ext := filepath.Ext(filename)
 	if ext != "" {
 		if mimeType := mime.TypeByExtension(ext); mimeType != "" {
 			return mimeType
@@ -287,6 +291,20 @@ func detectMIMEType(content []byte, filename string, providedType string) string
 	}
 
 	return detectedType
+}
+
+func notebookLMUploadMIMEType(ext string) string {
+	switch ext {
+	case ".epub":
+		return "application/epub+zip"
+	case ".pdf":
+		return "application/pdf"
+	case ".docx":
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	case ".csv":
+		return "text/csv"
+	}
+	return ""
 }
 
 func (c *Client) AddSourceFromReader(projectID string, r io.Reader, filename string, contentType ...string) (string, error) {
@@ -543,17 +561,7 @@ func (c *Client) registerFileSource(projectID, filename, sourceID string) (strin
 	resp, err := c.rpc.Do(rpc.Call{
 		ID:         rpc.RPCAddFileSource,
 		NotebookID: projectID,
-		Args: []interface{}{
-			[]interface{}{
-				[]interface{}{filename},
-			},
-			projectID,
-			[]interface{}{2}, // source type: file upload
-			[]interface{}{
-				1, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-				[]interface{}{1},
-			},
-		},
+		Args:       buildRegisterFileSourceArgs(projectID, filename),
 	})
 	if err != nil {
 		return "", fmt.Errorf("register file source RPC: %w", err)
@@ -569,6 +577,20 @@ func (c *Client) registerFileSource(projectID, filename, sourceID string) (strin
 		return sourceID, nil
 	}
 	return registeredID, nil
+}
+
+func buildRegisterFileSourceArgs(projectID, filename string) []interface{} {
+	return []interface{}{
+		[]interface{}{
+			[]interface{}{filename},
+		},
+		projectID,
+		[]interface{}{2}, // file upload registration
+		[]interface{}{
+			1, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			[]interface{}{1},
+		},
+	}
 }
 
 // processFileSource triggers document guide generation for a newly uploaded source.
@@ -2568,21 +2590,9 @@ func extractChatText(innerJSON string) string {
 	return ""
 }
 
-// DeleteChatHistory deletes all chat history for a notebook.
+// DeleteChatHistory is disabled until a confirmed delete-history RPC is captured.
 func (c *Client) DeleteChatHistory(projectID string) error {
-	_, err := c.rpc.Do(rpc.Call{
-		ID:         rpc.RPCDeleteChatHistory,
-		NotebookID: projectID,
-		Args: []interface{}{
-			nil,
-			nil,
-			projectID,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("delete chat history: %w", err)
-	}
-	return nil
+	return fmt.Errorf("delete chat history: unsupported until a confirmed NotebookLM delete-history RPC is captured; e3bVqc is %s", "PollResearch")
 }
 
 // GetConversations returns conversation IDs for a notebook.

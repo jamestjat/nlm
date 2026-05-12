@@ -49,10 +49,11 @@ const (
 	// endpoint at /_/LabsTailwindUi/data/google.internal.labs.tailwind.orchestration.v1.LabsTailwindOrchestrationService/GenerateFreeFormStreamed
 	// The "BD" ID was incorrectly assumed; kept only for reference.
 	RPCGenerateFreeFormStreamed = "BD"     // DEPRECATED: chat uses gRPC-Web, not batchexecute
-	RPCGetConversations        = "hPTbtc" // GetConversations - list conversation IDs for a notebook
-	RPCGetConversationHistory  = "khqZz"  // GetConversationHistory - retrieve chat messages
-	RPCDeleteChatHistory       = "e3bVqc" // DeleteChatHistory — Python maps this ID to PollResearch; may be repurposed
-	RPCRateConversationTurn    = "J7Gthc" // RateConversationTurn - mark conversation turn (thumbs up/down?)
+	RPCGetLastConversationID    = "hPTbtc" // GetLastConversationID - returns the most recent conversation ID
+	RPCGetConversationTurns     = "khqZz"  // GetConversationTurns - returns full Q&A turns for a conversation
+	RPCGetConversations         = RPCGetLastConversationID
+	RPCGetConversationHistory   = RPCGetConversationTurns
+	RPCRateConversationTurn     = "J7Gthc" // RateConversationTurn - mark conversation turn (thumbs up/down?)
 
 	// NotebookLM service - Generation operations
 	RPCGenerateDocumentGuides    = "tr032e" // GenerateDocumentGuides
@@ -61,17 +62,17 @@ const (
 	RPCGenerateSection           = "BeTrYd" // GenerateSection
 	RPCStartDraft                = "exXvGf" // StartDraft
 	RPCStartSection              = "pGC7gf" // StartSection
-	RPCGenerateReportSuggestions = "GHsKob" // GenerateReportSuggestions
+	RPCGenerateReportSuggestions = "ciyUvf" // GenerateReportSuggestions
 	RPCGetAudioFormats           = "sqTeoe" // GetAudioFormats - returns available audio overview types
 
 	// NotebookLM service - Account operations
 	RPCGetOrCreateAccount = "ZwVcOc" // GetOrCreateAccount
 	RPCMutateAccount      = "hT54vc" // MutateAccount
 
-	// NotebookLM service - Analytics operations
+	// NotebookLM service - Analytics and user tier operations
 	RPCGetProjectAnalytics = "AUrzMb" // GetProjectAnalytics
 	RPCSubmitFeedback      = "uNyJKe" // SubmitFeedback
-	RPCLogEvent            = "ozz5Z"  // LogEvent - analytics/telemetry
+	RPCGetUserTier         = "ozz5Z"  // GetUserTier - subscription tier from homepage context
 
 	// NotebookLMSharing service operations
 	RPCShareAudio        = "RGP97b" // ShareAudio
@@ -103,7 +104,7 @@ const (
 	// LabsTailwindOrchestrationService - Research operations
 	RPCStartFastResearch = "Ljjv0c" // StartFastResearch (web research)
 	RPCStartDeepResearch = "QA9ei"  // StartDeepResearch
-	RPCPollResearch      = "e3bVqc" // PollResearch — NOTE: same ID as RPCDeleteChatHistory; usage TBD
+	RPCPollResearch      = "e3bVqc" // PollResearch
 	RPCImportResearch    = "LBwxtb" // ImportResearch (import research sources)
 
 	// LabsTailwindOrchestrationService - Additional operations

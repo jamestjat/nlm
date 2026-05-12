@@ -8,11 +8,11 @@ import (
 // GENERATION_BEHAVIOR: append
 
 // EncodeGenerateReportSuggestionsArgs encodes arguments for LabsTailwindOrchestrationService.GenerateReportSuggestions
-// RPC ID: GHsKob
-// Argument format: [%project_id%]
+// RPC ID: ciyUvf
+// Argument format: [[2], %project_id%]
 func EncodeGenerateReportSuggestionsArgs(req *notebooklmv1alpha1.GenerateReportSuggestionsRequest) []interface{} {
 	// Using generalized argument encoder
-	args, err := argbuilder.EncodeRPCArgs(req, "[%project_id%]")
+	args, err := argbuilder.EncodeRPCArgs(req, "[[2], %project_id%]")
 	if err != nil {
 		// Log error and return empty args as fallback
 		// In production, this should be handled better
