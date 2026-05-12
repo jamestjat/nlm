@@ -857,7 +857,7 @@ func (c *LabsTailwindOrchestrationServiceClient) GenerateOutline(ctx context.Con
 func (c *LabsTailwindOrchestrationServiceClient) GenerateReportSuggestions(ctx context.Context, req *notebooklmv1alpha1.GenerateReportSuggestionsRequest) (*notebooklmv1alpha1.GenerateReportSuggestionsResponse, error) {
 	// Build the RPC call
 	call := rpc.Call{
-		ID:         "GHsKob",
+		ID:         "ciyUvf",
 		Args:       method.EncodeGenerateReportSuggestionsArgs(req),
 		NotebookID: req.GetProjectId(),
 	}

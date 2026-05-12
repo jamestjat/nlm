@@ -1,6 +1,7 @@
 package api
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -32,6 +33,24 @@ func TestDetectMIMEType(t *testing.T) {
 			providedType: "application/xml",
 			want:         "application/xml",
 		},
+		{
+			name:     "EPUB file uses NotebookLM upload MIME type",
+			content:  []byte("PK\x03\x04epub payload"),
+			filename: "book.epub",
+			want:     "application/epub+zip",
+		},
+		{
+			name:     "PDF file keeps upload MIME type",
+			content:  []byte("%PDF-1.7\n..."),
+			filename: "paper.pdf",
+			want:     "application/pdf",
+		},
+		{
+			name:     "DOCX file keeps upload MIME type",
+			content:  []byte("PK\x03\x04docx payload"),
+			filename: "report.docx",
+			want:     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		},
 	}
 
 	for _, tt := range tests {
@@ -41,6 +60,28 @@ func TestDetectMIMEType(t *testing.T) {
 			gotType := strings.Split(got, ";")[0]
 			if gotType != tt.want {
 				t.Errorf("detectMIMEType() = %v, want %v", gotType, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildRegisterFileSourceArgs(t *testing.T) {
+	for _, filename := range []string{"book.epub", "paper.pdf", "report.docx"} {
+		t.Run(filename, func(t *testing.T) {
+			got := buildRegisterFileSourceArgs("project-123", filename)
+			want := []interface{}{
+				[]interface{}{
+					[]interface{}{filename},
+				},
+				"project-123",
+				[]interface{}{2},
+				[]interface{}{
+					1, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+					[]interface{}{1},
+				},
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("buildRegisterFileSourceArgs() = %#v, want %#v", got, want)
 			}
 		})
 	}

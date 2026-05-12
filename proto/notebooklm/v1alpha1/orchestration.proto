@@ -481,8 +481,8 @@ service LabsTailwindOrchestrationService {
         option (arg_format) = "[%project_id%]";
     }
     rpc GenerateReportSuggestions(GenerateReportSuggestionsRequest) returns (GenerateReportSuggestionsResponse) {
-        option (rpc_id) = "GHsKob";
-        option (arg_format) = "[%project_id%]";
+        option (rpc_id) = "ciyUvf";
+        option (arg_format) = "[[2], %project_id%]";
     }
     rpc GenerateSection(GenerateSectionRequest) returns (GenerateSectionResponse) {
         option (rpc_id) = "BeTrYd";
