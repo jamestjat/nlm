@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -49,7 +50,7 @@ func parseAuthFlags(args []string) (*AuthOptions, []string, error) {
 	// Define auth-specific flags
 	opts := &AuthOptions{
 		ProfileName: chromeProfile,
-		TargetURL:   "https://notebooklm.google.com",
+		TargetURL:   "https://notebook.google.com",
 	}
 
 	authFlags.BoolVar(&opts.TryAllProfiles, "all", false, "Try all available browser profiles")
@@ -263,22 +264,42 @@ func handleAuth(args []string, debug bool) (string, string, error) {
 }
 
 func detectAuthInfo(cmd string) (string, string, error) {
-	// Extract cookies
-	cookieRe := regexp.MustCompile(`-H ['"]cookie: ([^'"]+)['"]`)
-	cookieMatch := cookieRe.FindStringSubmatch(cmd)
-	if len(cookieMatch) < 2 {
-		return "", "", fmt.Errorf("no cookies found in input (looking for cookie header in curl format)")
+	// Extract cookies from either a cookie header or curl's -b/--cookie flag
+	var cookies string
+	for _, re := range []*regexp.Regexp{
+		regexp.MustCompile(`-H ['"][cC]ookie: ([^'"]+)['"]`),
+		regexp.MustCompile(`(?:-b|--cookie) ['"]([^'"]+)['"]`),
+	} {
+		if m := re.FindStringSubmatch(cmd); len(m) >= 2 {
+			cookies = m[1]
+			break
+		}
 	}
-	cookies := cookieMatch[1]
+	if cookies == "" {
+		return "", "", fmt.Errorf("no cookies found in input (looking for cookie header or -b flag in curl format)")
+	}
 
-	// Extract auth token
-	atRe := regexp.MustCompile(`at=([^&\s]+)`)
+	// Extract auth token (URL-decoded, as it appears form-encoded in the request body)
+	atRe := regexp.MustCompile(`at=([^&\s'"]+)`)
 	atMatch := atRe.FindStringSubmatch(cmd)
 	if len(atMatch) < 2 {
 		return "", "", fmt.Errorf("no auth token found")
 	}
 	authToken := atMatch[1]
-	persistAuthToDisk(cookies, authToken, "", "", "")
+	if decoded, err := url.QueryUnescape(authToken); err == nil {
+		authToken = decoded
+	}
+
+	// Extract the bl build label so requests use a current value instead of the stale default
+	blParam := ""
+	if m := regexp.MustCompile(`[?&]bl=([^&\s'"]+)`).FindStringSubmatch(cmd); len(m) >= 2 {
+		blParam = m[1]
+		if decoded, err := url.QueryUnescape(blParam); err == nil {
+			blParam = decoded
+		}
+	}
+
+	persistAuthToDisk(cookies, authToken, "", "", blParam)
 	return authToken, cookies, nil
 }
 

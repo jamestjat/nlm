@@ -23,7 +23,7 @@ type LabsTailwindOrchestrationServiceClient struct {
 }
 
 // NewLabsTailwindOrchestrationServiceClient creates a new client for the LabsTailwindOrchestrationService service.
-// Source: notebooklm/v1alpha1/orchestration.proto IsJules: false Host: notebooklm.google.com App: LabsTailwindUi
+// Source: notebooklm/v1alpha1/orchestration.proto IsJules: false Host: notebook.google.com App: LabsTailwindUi
 func NewLabsTailwindOrchestrationServiceClient(authToken, cookies string, opts ...batchexecute.Option) *LabsTailwindOrchestrationServiceClient {
 	blParam := os.Getenv("NLM_BL_PARAM")
 	if blParam == "" {
@@ -34,7 +34,7 @@ func NewLabsTailwindOrchestrationServiceClient(authToken, cookies string, opts .
 		sessionID = "-3785608638908410209"
 	}
 	config := rpc.ServiceConfig{
-		Host: "notebooklm.google.com",
+		Host: "notebook.google.com",
 		App:  "LabsTailwindUi",
 		URLParams: map[string]string{
 			"hl":    "en",

@@ -23,7 +23,7 @@ type LabsTailwindGuidebooksServiceClient struct {
 }
 
 // NewLabsTailwindGuidebooksServiceClient creates a new client for the LabsTailwindGuidebooksService service.
-// Source: notebooklm/v1alpha1/sharing.proto IsJules: false Host: notebooklm.google.com App: LabsTailwindUi
+// Source: notebooklm/v1alpha1/sharing.proto IsJules: false Host: notebook.google.com App: LabsTailwindUi
 func NewLabsTailwindGuidebooksServiceClient(authToken, cookies string, opts ...batchexecute.Option) *LabsTailwindGuidebooksServiceClient {
 	blParam := os.Getenv("NLM_BL_PARAM")
 	if blParam == "" {
@@ -34,7 +34,7 @@ func NewLabsTailwindGuidebooksServiceClient(authToken, cookies string, opts ...b
 		sessionID = "-3785608638908410209"
 	}
 	config := rpc.ServiceConfig{
-		Host: "notebooklm.google.com",
+		Host: "notebook.google.com",
 		App:  "LabsTailwindUi",
 		URLParams: map[string]string{
 			"hl":    "en",
